@@ -15,22 +15,22 @@ var (
 	altTarget        = flag.String("b", "localhost:8081", "where testing traffic goes. response are skipped. localhost:8081")
 )
 
-type DubbleReverseProxy struct {
+type DoubleReverseProxy struct {
 	Target      *httputil.ReverseProxy
 	Alternative *httputil.ReverseProxy
 }
 
-func (dp *DubbleReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+func (dp *DoubleReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	outreq := new(http.Request)
 	*outreq = *req // includes shallow copies of maps, but okay
 	go dp.Alternative.ServeHTTP(&NoopResponseWriter{make(http.Header)}, outreq)
 	dp.Target.ServeHTTP(rw, req)
 }
 
-func NewDubbleProxy(target, alternative *url.URL) *DubbleReverseProxy {
+func NewDoubleProxy(target, alternative *url.URL) *DoubleReverseProxy {
 	targetProxy := httputil.NewSingleHostReverseProxy(target)
 	altProxy := httputil.NewSingleHostReverseProxy(alternative)
-	return &DubbleReverseProxy{targetProxy, altProxy}
+	return &DoubleReverseProxy{targetProxy, altProxy}
 }
 
 type NoopResponseWriter struct {
@@ -54,7 +54,7 @@ func main() {
 
 	s := &http.Server{
 		Addr:    *listen,
-		Handler: NewDubbleProxy(targetURL, altURL),
+		Handler: NewDoubleProxy(targetURL, altURL),
 	}
 	log.Fatal(s.ListenAndServe())
 }
