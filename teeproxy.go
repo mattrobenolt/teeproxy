@@ -1,102 +1,60 @@
 package main
 
 import (
-	"bytes"
 	"flag"
-	"fmt"
-	"io"
-	"net"
+	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"runtime"
-	"time"
 )
 
 var (
 	listen           = flag.String("l", ":8888", "port to accept requests")
-	targetProduction = flag.String("a", "localhost:8080", "where production traffic goes. http://localhost:8080/production")
-	altTarget        = flag.String("b", "localhost:8081", "where testing traffic goes. response are skipped. http://localhost:8081/test")
-	debug            = flag.Bool("debug", false, "more logging, showing ignored output")
+	targetProduction = flag.String("a", "localhost:8080", "where production traffic goes. localhost:8080")
+	altTarget        = flag.String("b", "localhost:8081", "where testing traffic goes. response are skipped. localhost:8081")
 )
 
-type handler struct {
-	Target      string
-	Alternative string
+type DubbleReverseProxy struct {
+	Target      *httputil.ReverseProxy
+	Alternative *httputil.ReverseProxy
 }
 
-func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	req1, req2 := DuplicateRequest(req)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil && *debug {
-				fmt.Println("Recovered in f", r)
-			}
-		}()
-		client_tcp_conn, _ := net.DialTimeout("tcp", h.Alternative, time.Duration(1*time.Second)) // Open new TCP connection to the server
-		client_http_conn := httputil.NewClientConn(client_tcp_conn, nil)                          // Start a new HTTP connection on it
-		client_http_conn.Write(req1)                                                              // Pass on the request
-		client_http_conn.Read(req1)                                                               // Read back the reply
-		client_http_conn.Close()                                                                  // Close the connection to the server
-	}()
-	defer func() {
-		if r := recover(); r != nil && *debug {
-			fmt.Println("Recovered in f", r)
-		}
-	}()
-
-	client_tcp_conn, _ := net.DialTimeout("tcp", h.Target, time.Duration(3*time.Second)) // Open new TCP connection to the server
-	client_http_conn := httputil.NewClientConn(client_tcp_conn, nil)                     // Start a new HTTP connection on it
-	client_http_conn.Write(req2)                                                         // Pass on the request
-	resp, _ := client_http_conn.Read(req2)                                               // Read back the reply
-	resp.Write(w)                                                                        // Write the reply to the original connection
-	client_http_conn.Close()                                                             // Close the connection to the server
+func (dp *DubbleReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	outreq := new(http.Request)
+	*outreq = *req // includes shallow copies of maps, but okay
+	go dp.Alternative.ServeHTTP(&NoopResponseWriter{make(http.Header)}, outreq)
+	dp.Target.ServeHTTP(rw, req)
 }
+
+func NewDubbleProxy(target, alternative *url.URL) *DubbleReverseProxy {
+	targetProxy := httputil.NewSingleHostReverseProxy(target)
+	altProxy := httputil.NewSingleHostReverseProxy(alternative)
+	return &DubbleReverseProxy{targetProxy, altProxy}
+}
+
+type NoopResponseWriter struct {
+	header http.Header
+}
+
+func (r *NoopResponseWriter) Header() http.Header {
+	return r.header
+}
+func (*NoopResponseWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+func (*NoopResponseWriter) WriteHeader(int) {}
 
 func main() {
 	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	local, _ := net.Listen("tcp", *listen)
-	h := handler{
-		Target:      *targetProduction,
-		Alternative: *altTarget,
-	}
-	http.Serve(local, h)
-}
+	targetURL, _ := url.Parse("http://" + *targetProduction)
+	altURL, _ := url.Parse("http://" + *altTarget)
 
-type nopCloser struct {
-	io.Reader
-}
-
-func (nopCloser) Close() error { return nil }
-
-func DuplicateRequest(request *http.Request) (request1 *http.Request, request2 *http.Request) {
-	b1 := new(bytes.Buffer)
-	b2 := new(bytes.Buffer)
-	w := io.MultiWriter(b1, b2)
-	io.Copy(w, request.Body)
-	defer request.Body.Close()
-	request1 = &http.Request{
-		Method:        request.Method,
-		URL:           request.URL,
-		Proto:         "HTTP/1.1",
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        request.Header,
-		Body:          nopCloser{b1},
-		Host:          request.Host,
-		ContentLength: request.ContentLength,
+	s := &http.Server{
+		Addr:    *listen,
+		Handler: NewDubbleProxy(targetURL, altURL),
 	}
-	request2 = &http.Request{
-		Method:        request.Method,
-		URL:           request.URL,
-		Proto:         "HTTP/1.1",
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        request.Header,
-		Body:          nopCloser{b2},
-		Host:          request.Host,
-		ContentLength: request.ContentLength,
-	}
-	return
+	log.Fatal(s.ListenAndServe())
 }
