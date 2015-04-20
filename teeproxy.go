@@ -22,6 +22,7 @@ var (
 	debug            = flag.Bool("debug", false, "debug logging")
 	timeout          = flag.Duration("timeout", 1*time.Second, "total request timeout")
 	deadline         = flag.Duration("deadline", 100*time.Millisecond, "deadline to establish connections to b")
+	logThreshold     = flag.Duration("log-threshold", 500*time.Millisecond, "request duration before logging")
 )
 
 var ErrTimeout = errors.New("timeout")
@@ -80,7 +81,7 @@ func (t *Tee) Close() error {
 			debugLog("[DEBUG] b closed connection")
 		case <-time.After(*linger):
 			// We waited too long, forcibly close this shit
-			log.Println("[INFO] forcing b closed")
+			debugLog("[DEBUG] forcing b closed")
 		}
 		debugLog("[DEBUG] finished draining tee")
 
@@ -211,8 +212,8 @@ func tee(conn net.Conn, targetAddr, altAddr string) {
 
 	end := time.Now()
 
-	// Log any request that took longer than 500ms
-	if end.Sub(start) > 500*time.Millisecond {
+	// Log any request that took longer than our threshold
+	if end.Sub(start) > *logThreshold {
 		log.Println(fmt.Sprintf("[INFO] total: %s, conn: %s, read: %s", end.Sub(start), enda.Sub(starta), endb.Sub(startb)))
 	}
 }
@@ -227,6 +228,7 @@ func main() {
 	fmt.Println("b:", *altTarget)
 	fmt.Println("deadline:", *deadline)
 	fmt.Println("linger:", *linger)
+	fmt.Println("log-threshold:", *logThreshold)
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
